@@ -1,108 +1,70 @@
-import sqlite3
+import os
+from supabase import create_client
 from typing import List, Dict
+from dotenv import load_dotenv
+load_dotenv()
 
-DB_NAME = 'fittracker.db'
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 
-def create_connection():
-    return sqlite3.connect(DB_NAME, check_same_thread=False)
-
-
-def create_tables():
-    conn = create_connection()
-    c = conn.cursor()
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS workouts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
-            label TEXT
-        )
-    ''')
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS exercises (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            workout_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            FOREIGN KEY (workout_id) REFERENCES workouts(id)
-        )
-    ''')
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS sets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            exercise_id INTEGER NOT NULL,
-            reps INTEGER,
-            weight REAL,
-            notes TEXT,
-            FOREIGN KEY (exercise_id) REFERENCES exercises(id)
-        )
-    ''')
-
-    conn.commit()
-    conn.close()
-
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def save_full_workout(workout_data: Dict):
-    conn = create_connection()
-    c = conn.cursor()
-
     # Insert the workout
-    c.execute(
-        'INSERT INTO workouts (date, label) VALUES (?, ?)',
-        (workout_data['date'], workout_data.get('label', None))
-    )
-    workout_id = c.lastrowid
+    workout_resp = supabase.table("workouts").insert({
+        "date": workout_data["date"],
+        "label": workout_data.get("label", None)
+    }).execute()
+    workout_id = workout_resp.data[0]["id"]
 
-    for exercise in workout_data['exercises']:
-        c.execute(
-            'INSERT INTO exercises (workout_id, name) VALUES (?, ?)',
-            (workout_id, exercise['name'])
-        )
-        exercise_id = c.lastrowid
+    for exercise in workout_data["exercises"]:
+        exercise_resp = supabase.table("exercises").insert({
+            "workout_id": workout_id,
+            "name": exercise["name"]
+        }).execute()
+        exercise_id = exercise_resp.data[0]["id"]
 
-        for s in exercise['sets']:
-            c.execute(
-                'INSERT INTO sets (exercise_id, reps, weight, notes) VALUES (?, ?, ?, ?)',
-                (exercise_id, s['reps'], s['weight'], s['notes'])
-            )
-
-    conn.commit()
-    conn.close()
-
+        for s in exercise["sets"]:
+            supabase.table("sets").insert({
+                "exercise_id": exercise_id,
+                "reps": s["reps"],
+                "weight": s["weight"],
+                "notes": s["notes"]
+            }).execute()
 
 def get_workouts_by_date(date: str) -> List[Dict]:
-    conn = create_connection()
-    c = conn.cursor()
+    workout_resp = supabase.table("workouts").select("*").eq("date", date).order("id", desc=True).execute()
+    workouts = []
 
-    c.execute('SELECT id, label FROM workouts WHERE date = ? ORDER BY id DESC', (date,))
-    workout_rows = c.fetchall()
-
-    results = []
-    for workout_id, label in workout_rows:
-        c.execute('SELECT id, name FROM exercises WHERE workout_id = ?', (workout_id,))
-        exercise_rows = c.fetchall()
+    for w in workout_resp.data:
+        workout_id = w["id"]
+        label = w["label"]
+        ex_resp = supabase.table("exercises").select("*").eq("workout_id", workout_id).execute()
 
         exercises = []
-        for exercise_id, name in exercise_rows:
-            c.execute('SELECT reps, weight, notes FROM sets WHERE exercise_id = ?', (exercise_id,))
-            sets = [{'reps': r, 'weight': w, 'notes': n} for r, w, n in c.fetchall()]
-            exercises.append({'name': name, 'sets': sets})
+        for ex in ex_resp.data:
+            ex_id = ex["id"]
+            sets_resp = supabase.table("sets").select("*").eq("exercise_id", ex_id).execute()
+            sets = [{"reps": s["reps"], "weight": s["weight"], "notes": s["notes"]} for s in sets_resp.data]
+            exercises.append({"name": ex["name"], "sets": sets})
 
-        results.append({'id': workout_id, 'label': label, 'date': date, 'exercises': exercises})
+        workouts.append({
+            "id": workout_id,
+            "date": date,
+            "label": label,
+            "exercises": exercises
+        })
 
-    conn.close()
-    return results
-
+    return workouts
 
 def delete_workout_by_id(workout_id: int):
-    conn = create_connection()
-    c = conn.cursor()
+    # Supabase does not cascade deletes via the API, so do it manually
+    ex_resp = supabase.table("exercises").select("id").eq("workout_id", workout_id).execute()
+    exercise_ids = [ex["id"] for ex in ex_resp.data]
 
-    c.execute('DELETE FROM sets WHERE exercise_id IN (SELECT id FROM exercises WHERE workout_id = ?)', (workout_id,))
-    c.execute('DELETE FROM exercises WHERE workout_id = ?', (workout_id,))
-    c.execute('DELETE FROM workouts WHERE id = ?', (workout_id,))
+    for ex_id in exercise_ids:
+        supabase.table("sets").delete().eq("exercise_id", ex_id).execute()
 
-    conn.commit()
-    conn.close()
+    supabase.table("exercises").delete().eq("workout_id", workout_id).execute()
+    supabase.table("workouts").delete().eq("id", workout_id).execute()
