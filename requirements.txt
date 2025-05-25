@@ -4,3 +4,5 @@ pandas
 pydantic
 supabase
 dotenv
+flask
+flask_cors

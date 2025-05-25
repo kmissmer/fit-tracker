@@ -67,4 +67,8 @@ def delete_workout_by_id(workout_id: int):
         supabase.table("sets").delete().eq("exercise_id", ex_id).execute()
 
     supabase.table("exercises").delete().eq("workout_id", workout_id).execute()
-    supabase.table("workouts").delete().eq("id", workout_id).execute()
+    resp = supabase.table("workouts").delete().eq("id", workout_id).execute()
+
+    # Return True if a workout was actually deleted
+    return len(resp.data) > 0
+
